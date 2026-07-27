@@ -33,6 +33,18 @@ jobs:
           mkdir -p cookies
           echo "${{ secrets.FB_COOKIES }}" | base64 -d > cookies/facebook.json
 
+      - name: Test Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          node -e "
+            const t=process.env.TELEGRAM_BOT_TOKEN, c=process.env.TELEGRAM_CHAT_ID;
+            console.log('Chat ID:',c);
+            fetch('https://api.telegram.org/bot'+t+'/getMe').then(r=>r.json()).then(d=>console.log('Bot:',d.ok,d.result?.username));
+            fetch('https://api.telegram.org/bot'+t+'/sendMessage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:c,text:'🤖 GitHub Actions test - scanner alive!',parse_mode:'HTML'})}).then(r=>r.json()).then(d=>console.log(d.ok?'✅ Sent!':'❌ Fail:',JSON.stringify(d)));
+          "
+
       - name: Run scan
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
