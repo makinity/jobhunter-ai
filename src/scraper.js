@@ -17,12 +17,17 @@ export async function scrapeGroup(groupUrl, options = {}) {
   let browser;
   try {
     browser = await puppeteer.launch({
-      headless: headless === true || headless === 'new',
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--window-size=1280,800',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-extensions',
       ],
     });
 

@@ -20,6 +20,11 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Chrome dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgbm-dev libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2
+
       - name: Install dependencies
         run: npm ci
 
