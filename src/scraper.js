@@ -1,7 +1,11 @@
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+
+// Apply stealth plugin (many evasions to avoid headless detection)
+puppeteer.use(StealthPlugin());
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COOKIES_PATH = join(__dirname, '..', 'cookies', 'facebook.json');
@@ -18,6 +22,8 @@ const LAUNCH_ARGS = [
   '--disable-extensions',
   '--disable-blink-features=AutomationControlled',
   '--lang=en-US',
+  '--disable-component-update',
+  '--disable-background-networking',
 ];
 
 /**
@@ -36,22 +42,11 @@ export async function scrapeGroup(groupUrl, options = {}) {
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 768 });
-
-    // Override navigator properties that giveaway headless Chrome
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    });
-
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
     );
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9',
-    });
 
-    // Load cookies
+    // Load cookies before any navigation
     try {
       const cookieData = await readFile(COOKIES_PATH, 'utf-8');
       const cookies = JSON.parse(cookieData);
@@ -70,74 +65,56 @@ export async function scrapeGroup(groupUrl, options = {}) {
 
     const postLoginUrl = page.url();
     const pageTitle = await page.title().catch(() => '');
-    console.log(`  ℹ Page title: "${pageTitle.substring(0, 80)}"`);
+    console.log(`  ℹ Page: "${pageTitle.substring(0, 80)}" | URL: ${postLoginUrl.substring(0, 100)}`);
 
-    // Check if we hit a login wall
+    // Check for login wall
     const isLoginPage = postLoginUrl.includes('login') || postLoginUrl.includes('checkpoint')
       || pageTitle.toLowerCase().includes('log in') || pageTitle.toLowerCase().includes('confirm')
       || (await page.$('input[name="email"], input[name="pass"], #email, #pass').catch(() => null));
 
     if (isLoginPage) {
-      console.log(`  ❌ Facebook login wall detected — cookies expired or blocked from this IP.`);
-      console.log(`  ⚠ Try re-exporting cookies from your browser (see MAINTENANCE.md).`);
+      console.log(`  ❌ Facebook login wall — cookies don't work from this IP.`);
+      console.log(`  ⚠ Re-export cookies from your browser (see MAINTENANCE.md).`);
       await browser.close();
       return [];
     }
 
     console.log(`  ✅ Session valid!`);
 
-    // ── Step 2: Navigate to group ──
+    // ── Step 2: Small human-like delay before group navigation ──
+    await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
+
+    // ── Step 3: Try navigating to group ──
     console.log(`  🌐 Navigating to group...`);
-    await page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    const loaded = await navigateWithRetry(page, groupUrl);
 
-    // Wait briefly for any checkpoint or redirect to settle
-    await new Promise(r => setTimeout(r, 3000));
-
-    const groupPageUrl = page.url();
-    const groupPageTitle = await page.title().catch(() => '');
-
-    console.log(`  ℹ Group page: "${groupPageTitle.substring(0, 80)}" (URL: ${groupPageUrl.substring(0, 80)})`);
-
-    // Check if we got redirected away from the group
-    const isCheckpoint = groupPageUrl.includes('checkpoint')
-      || groupPageUrl.includes('login')
-      || groupPageUrl.includes('two_step')
-      || groupPageUrl === 'https://www.facebook.com/'
-      || groupPageUrl === 'https://facebook.com/';
-
-    if (isCheckpoint) {
-      console.log(`  ❌ Facebook blocked group access — redirect to: ${groupPageUrl}`);
-      console.log(`  ⚠ This usually means Facebook detected the headless browser.`);
-      console.log(`  ⚠ Try: 1) Re-export cookies from browser, 2) Use a different UA, or 3) Run locally instead of cloud.`);
-
-      // Try one more thing: navigate back and wait longer
-      console.log(`  🔄 Retrying with longer wait...`);
-      await page.goto('https://www.facebook.com/', { waitUntil: 'networkidle2', timeout: 30000 });
-      await new Promise(r => setTimeout(r, 5000));
-
-      await page.goto(groupUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-      await new Promise(r => setTimeout(r, 5000));
-
-      const retryUrl = page.url();
-      const retryTitle = await page.title().catch(() => '');
-      console.log(`  ℹ Retry: "${retryTitle.substring(0, 80)}" (${retryUrl.substring(0, 80)})`);
-
-      if (retryUrl.includes('checkpoint') || retryUrl.includes('login') || retryUrl === 'https://www.facebook.com/') {
-        console.log(`  ❌ Still blocked after retry. Skipping group.`);
+    if (!loaded) {
+      // Try mobile URL as fallback
+      const mobileUrl = groupUrl
+        .replace('https://www.facebook.com/', 'https://m.facebook.com/')
+        .replace('https://facebook.com/', 'https://m.facebook.com/');
+      if (mobileUrl !== groupUrl) {
+        console.log(`  📱 Trying mobile URL fallback...`);
+        const mobileLoaded = await navigateWithRetry(page, mobileUrl);
+        if (!mobileLoaded) {
+          console.log(`  ❌ Cannot access group. Skipping.`);
+          await browser.close();
+          return [];
+        }
+      } else {
+        console.log(`  ❌ Cannot access group. Skipping.`);
         await browser.close();
         return [];
       }
-
-      console.log(`  ✅ Retry succeeded!`);
     }
 
-    // Wait for feed content to load
+    // ── Step 4: Wait for feed content ──
     await page.waitForSelector('[role="feed"], [role="article"], [data-pagelet*="FeedUnit"]', { timeout: 20000 }).catch(() => {});
 
-    // ── Step 3: Scroll to load more posts ──
+    // ── Step 5: Scroll to load more posts ──
     await autoScroll(page, 5);
 
-    // ── Step 4: Extract posts ──
+    // ── Step 6: Extract posts ──
     const posts = await page.evaluate((max) => {
       const results = [];
       const seen = new Set();
@@ -147,6 +124,7 @@ export async function scrapeGroup(groupUrl, options = {}) {
         '[data-pagelet*="FeedUnit"]',
         'div[class*="userContent"]',
         'div[data-testid*="story"]',
+        'div[class*="story_body_container"]',
       ];
 
       let postElements = [];
@@ -196,6 +174,42 @@ export async function scrapeGroup(groupUrl, options = {}) {
   } finally {
     if (browser) await browser.close();
   }
+}
+
+/**
+ * Navigate to a URL and retry if redirected to a checkpoint/login page.
+ * Returns true if successfully loaded, false if blocked.
+ */
+async function navigateWithRetry(page, url) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await new Promise(r => setTimeout(r, 3000));
+
+    const currentUrl = page.url();
+    const title = await page.title().catch(() => '');
+
+    console.log(`  ℹ Attempt ${attempt}: "${title.substring(0, 60)}"`);
+
+    const isBlocked = currentUrl.includes('checkpoint')
+      || currentUrl.includes('login')
+      || currentUrl === 'https://www.facebook.com/'
+      || currentUrl === 'https://facebook.com/'
+      || currentUrl === 'https://m.facebook.com/';
+
+    if (!isBlocked) {
+      return true; // Successfully loaded
+    }
+
+    console.log(`  ⚠ Attempt ${attempt} blocked (redirect to ${currentUrl.substring(0, 60)})`);
+
+    if (attempt === 1) {
+      // Before retry, go back to main Facebook and wait
+      console.log(`  🔄 Retrying...`);
+      await page.goto('https://www.facebook.com/', { waitUntil: 'networkidle2', timeout: 30000 });
+      await new Promise(r => setTimeout(r, 4000 + Math.random() * 2000));
+    }
+  }
+  return false; // Both attempts failed
 }
 
 async function autoScroll(page, times) {
