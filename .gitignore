@@ -4,3 +4,6 @@ node_modules/
 data/*.db
 cookies/
 .next/
+# Local task scheduler files
+scanner-task.xml
+scanner-log.txt
