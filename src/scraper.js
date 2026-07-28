@@ -112,10 +112,16 @@ export async function scrapeGroup(groupUrl, options = {}) {
     await page.waitForSelector('[role="feed"], [role="article"], [data-pagelet*="FeedUnit"]', { timeout: 20000 }).catch(() => {});
 
     // ── Step 5: Scroll to load more posts ──
-    await autoScroll(page, 5);
+    try {
+      await autoScroll(page, 5);
+    } catch (scrollErr) {
+      console.log(`  ⚠ Scroll error: ${scrollErr.message.substring(0, 60)}`);
+    }
 
     // ── Step 6: Extract posts ──
-    const posts = await page.evaluate((max) => {
+    let posts = [];
+    try {
+      posts = await page.evaluate((max) => {
       const results = [];
       const seen = new Set();
 
@@ -164,6 +170,9 @@ export async function scrapeGroup(groupUrl, options = {}) {
 
       return results;
     }, maxPosts);
+    } catch (evaluateErr) {
+      console.log(`  ⚠ Extract error: ${evaluateErr.message.substring(0, 80)}`);
+    }
 
     console.log(`  📄 Scraped ${posts.length} posts from group`);
     return posts;
